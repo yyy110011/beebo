@@ -57,21 +57,6 @@ impl SessionData {
             metrics: MetricsData::new(),
         }
     }
-
-    /// Get a snapshot of the screen contents (for mini-preview in tiles).
-    #[allow(dead_code)]
-    pub fn screen_lines(&self, max_lines: usize) -> Vec<String> {
-        let screen = self.screen.screen();
-        let rows = screen.size().0 as usize;
-        let _cols = screen.size().1;
-        let start = if rows > max_lines { rows - max_lines } else { 0 };
-        (start..rows)
-            .map(|r| {
-                let r16 = r as u16;
-                screen.contents_between(r16, 0, r16 + 1, 0)
-            })
-            .collect()
-    }
 }
 
 pub type SharedSession = Arc<Mutex<SessionData>>;
