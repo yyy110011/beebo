@@ -1,4 +1,4 @@
-# Pulse
+# Beebo
 
 Real-time SSH fleet monitoring TUI — CPU, Memory, and Network sparklines across all your hosts, right in your terminal.
 
@@ -31,7 +31,7 @@ cargo install --path .
 
 ```bash
 # Make sure you have hosts in ~/.ssh/config
-pulse
+beebo
 ```
 
 ## Requirements

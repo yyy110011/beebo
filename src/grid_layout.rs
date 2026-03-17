@@ -131,7 +131,7 @@ mod tests {
             hidden: vec!["old-server".to_string()],
         };
 
-        let tmp = PathBuf::from("/tmp/pulse_test_layout.yaml");
+        let tmp = PathBuf::from("/tmp/beebo_test_layout.yaml");
         layout.save(&tmp).unwrap();
         let loaded = GridLayout::load(&tmp).unwrap();
 

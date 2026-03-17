@@ -201,7 +201,7 @@ impl Dashboard {
 
     fn layout_path() -> PathBuf {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        PathBuf::from(home).join(".config").join("pulse").join("layout.yaml")
+        PathBuf::from(home).join(".config").join("beebo").join("layout.yaml")
     }
 
     /// Get the session at (row, col).

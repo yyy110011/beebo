@@ -213,6 +213,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "beebo"
+version = "0.1.0"
+dependencies = [
+ "color-eyre",
+ "ratatui",
+ "russh",
+ "russh-keys",
+ "russh-sftp",
+ "serde",
+ "serde_yaml",
+ "ssh-key",
+ "tokio",
+ "vt100",
+ "whoami",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2260,23 +2277,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "pulse"
-version = "0.1.0"
-dependencies = [
- "color-eyre",
- "ratatui",
- "russh",
- "russh-keys",
- "russh-sftp",
- "serde",
- "serde_yaml",
- "ssh-key",
- "tokio",
- "vt100",
- "whoami",
 ]
 
 [[package]]
