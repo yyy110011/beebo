@@ -12,14 +12,14 @@ use crate::metrics::MetricType;
 use crate::session::SessionState;
 
 /// Draw the dashboard view.
-pub fn draw(frame: &mut Frame, dashboard: &Dashboard, rt: &tokio::runtime::Handle) {
+pub fn draw(frame: &mut Frame, dashboard: &mut Dashboard, rt: &tokio::runtime::Handle) {
     match dashboard.focused {
         Some((row, col)) => draw_focused(frame, dashboard, row, col, rt),
         None => draw_grid(frame, dashboard, rt),
     }
 }
 
-fn draw_grid(frame: &mut Frame, dashboard: &Dashboard, rt: &tokio::runtime::Handle) {
+fn draw_grid(frame: &mut Frame, dashboard: &mut Dashboard, rt: &tokio::runtime::Handle) {
     let area = frame.area();
 
     // Layout: grid + status bar
@@ -47,15 +47,52 @@ fn draw_grid(frame: &mut Frame, dashboard: &Dashboard, rt: &tokio::runtime::Hand
         return;
     }
 
-    // Build constraints: for each row, header(1) + tiles(ratio)
+    // Calculate approximate row height for scroll calculations
+    // Each row takes: 1 (header) + tile_height
+    // tile_height ≈ grid_area.height / total_sections (from Ratio constraint)
+    let grid_height = grid_area.height as usize;
+    let approx_tile_height = if total_sections > 0 {
+        (grid_height / total_sections).max(1)
+    } else {
+        1
+    };
+    let approx_row_height = 1 + approx_tile_height; // header + tiles
+
+    // Calculate how many rows can be visible
+    let visible_rows = if approx_row_height > 0 {
+        (grid_height / approx_row_height).max(1)
+    } else {
+        num_rows
+    };
+
+    // Adjust scroll_offset to keep selected_row visible
+    if dashboard.selected_row < dashboard.scroll_offset {
+        dashboard.scroll_offset = dashboard.selected_row;
+    } else if dashboard.selected_row >= dashboard.scroll_offset + visible_rows {
+        dashboard.scroll_offset = dashboard.selected_row.saturating_sub(visible_rows - 1);
+    }
+    // Clamp scroll_offset
+    if num_rows > visible_rows {
+        dashboard.scroll_offset = dashboard.scroll_offset.min(num_rows - visible_rows);
+    } else {
+        dashboard.scroll_offset = 0;
+    }
+
+    // Determine the range of rows to render
+    let scroll_offset = dashboard.scroll_offset;
+    let end_row = (scroll_offset + visible_rows).min(num_rows);
+    let visible_row_count = end_row - scroll_offset;
+
+    // Build constraints only for visible rows
+    let rendered_sections = visible_row_count + if has_hidden { 1 } else { 0 };
     let mut constraints: Vec<Constraint> = Vec::new();
-    for _ in 0..num_rows {
+    for _ in 0..visible_row_count {
         constraints.push(Constraint::Length(1)); // row header
-        constraints.push(Constraint::Ratio(1, total_sections as u32)); // tiles
+        constraints.push(Constraint::Ratio(1, rendered_sections as u32)); // tiles
     }
     if has_hidden {
         constraints.push(Constraint::Length(1)); // hidden header
-        constraints.push(Constraint::Ratio(1, total_sections as u32)); // hidden tiles
+        constraints.push(Constraint::Ratio(1, rendered_sections as u32)); // hidden tiles
     }
 
     let chunks = Layout::default()
@@ -63,10 +100,11 @@ fn draw_grid(frame: &mut Frame, dashboard: &Dashboard, rt: &tokio::runtime::Hand
         .constraints(constraints)
         .split(grid_area);
 
-    // Render each dashboard row
-    for (row_idx, dash_row) in dashboard.rows.iter().enumerate() {
-        let header_area = chunks[row_idx * 2];
-        let tiles_area = chunks[row_idx * 2 + 1];
+    // Render each visible dashboard row
+    for (vi, row_idx) in (scroll_offset..end_row).enumerate() {
+        let dash_row = &dashboard.rows[row_idx];
+        let header_area = chunks[vi * 2];
+        let tiles_area = chunks[vi * 2 + 1];
 
         // --- Row header ---
         let is_renaming = dashboard.rename_mode && dashboard.selected_row == row_idx;
@@ -136,7 +174,7 @@ fn draw_grid(frame: &mut Frame, dashboard: &Dashboard, rt: &tokio::runtime::Hand
 
     // --- Hidden section ---
     if has_hidden {
-        let hidden_header_idx = num_rows * 2;
+        let hidden_header_idx = visible_row_count * 2;
         let hidden_tiles_idx = hidden_header_idx + 1;
         let hidden_header_area = chunks[hidden_header_idx];
         let hidden_tiles_area = chunks[hidden_tiles_idx];

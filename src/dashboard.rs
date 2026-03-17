@@ -52,6 +52,8 @@ pub struct Dashboard {
     pub selected_row: usize,
     /// Currently selected column index within the row.
     pub selected_col: usize,
+    /// Scroll offset for the grid view (number of rows to skip from the top).
+    pub scroll_offset: usize,
     /// Currently focused session (row, col) — None = grid view.
     pub focused: Option<(usize, usize)>,
     /// Password input buffer.
@@ -178,6 +180,7 @@ impl Dashboard {
             show_hidden: false,
             selected_row: 0,
             selected_col: 0,
+            scroll_offset: 0,
             focused: None,
             password_input: String::new(),
             entering_password: false,
@@ -346,9 +349,10 @@ impl Dashboard {
                         self.shake_frame = Some((next_row, 6));
                         return false;
                     }
-                    // Remove from current row, insert at beginning of next row
+                    // Remove from current row, insert at same column position in next row
                     let host = self.rows[cur_row].hosts.remove(cur_col);
-                    self.rows[next_row].hosts.insert(0, host);
+                    let insert_col = cur_col.min(self.rows[next_row].hosts.len());
+                    self.rows[next_row].hosts.insert(insert_col, host);
                     // Remove empty row
                     if self.rows[cur_row].hosts.is_empty() {
                         self.rows.remove(cur_row);
@@ -357,7 +361,7 @@ impl Dashboard {
                     } else {
                         self.selected_row = next_row;
                     }
-                    self.selected_col = 0;
+                    self.selected_col = insert_col;
                     true
                 } else {
                     // At last row: create a new row
@@ -388,10 +392,10 @@ impl Dashboard {
                     self.shake_frame = Some((prev_row, 6));
                     return false;
                 }
-                // Remove from current row, insert at end of previous row
+                // Remove from current row, insert at same column position in previous row
                 let host = self.rows[cur_row].hosts.remove(cur_col);
-                let insert_col = self.rows[prev_row].hosts.len();
-                self.rows[prev_row].hosts.push(host);
+                let insert_col = cur_col.min(self.rows[prev_row].hosts.len());
+                self.rows[prev_row].hosts.insert(insert_col, host);
                 // Remove empty row
                 if self.rows[cur_row].hosts.is_empty() {
                     self.rows.remove(cur_row);
