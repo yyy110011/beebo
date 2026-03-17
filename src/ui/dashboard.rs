@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::dashboard::{ActivePanel, Dashboard};
+use crate::dashboard::{Dashboard, FocusPanel, FocusState};
 use crate::metrics::MetricType;
 use crate::session::SessionState;
 
@@ -367,33 +367,46 @@ fn draw_focused(
     let terminal_area = bottom_rows[0];
     let status_area = bottom_rows[1];
 
+    // Determine border color for each panel based on focus state
+    let panel_border = |panel: FocusPanel| -> Color {
+        if dashboard.focus_panel == panel {
+            match dashboard.focus_state {
+                FocusState::PanelSelect => Color::Cyan,
+                FocusState::PanelFocused => Color::Green,
+            }
+        } else {
+            Color::DarkGray
+        }
+    };
+    let panel_title_bold = |panel: FocusPanel| -> bool {
+        dashboard.focus_panel == panel
+    };
+
     // ─── File Browser Sidebar ───
-    draw_sidebar(frame, &data.file_browser, sidebar_area, dashboard.active_panel == ActivePanel::Sidebar);
+    draw_sidebar(frame, &data.file_browser, sidebar_area, panel_border(FocusPanel::Sidebar), panel_title_bold(FocusPanel::Sidebar));
 
     // ─── Disk Info Panel ───
-    draw_disk_panel(frame, &data.disks, data.disk_loading, disk_area);
+    draw_disk_panel(frame, &data.disks, data.disk_loading, disk_area, panel_border(FocusPanel::Disk), panel_title_bold(FocusPanel::Disk));
 
     // ─── System Info Panel ───
-    draw_sysinfo_panel(frame, &data.system_info, &data.host.name, sysinfo_area);
+    draw_sysinfo_panel(frame, &data.system_info, &data.host.name, sysinfo_area, panel_border(FocusPanel::SysInfo), panel_title_bold(FocusPanel::SysInfo));
 
     // ─── Main Panel (process viewer or file content) ───
-    draw_main_panel(frame, &data, main_panel_area);
+    draw_main_panel(frame, &data, main_panel_area, panel_border(FocusPanel::Main), panel_title_bold(FocusPanel::Main));
 
     // ─── Terminal Pane ───
     {
         let term_title = format!(" {state_icon} Terminal ");
-        let term_border_color = if dashboard.active_panel == ActivePanel::Terminal {
-            Color::Cyan
+        let term_border_color = panel_border(FocusPanel::Terminal);
+        let term_title_style = if panel_title_bold(FocusPanel::Terminal) {
+            Style::default().fg(state_color).add_modifier(Modifier::BOLD)
         } else {
-            Color::DarkGray
+            Style::default().fg(state_color)
         };
         let term_block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(term_border_color))
-            .title(Span::styled(
-                term_title,
-                Style::default().fg(state_color).add_modifier(Modifier::BOLD),
-            ));
+            .title(Span::styled(term_title, term_title_style));
         let term_inner = term_block.inner(terminal_area);
         frame.render_widget(term_block, terminal_area);
 
@@ -413,22 +426,43 @@ fn draw_focused(
     }
 
     // ─── Status Bar ───
-    let panel_label = match dashboard.active_panel {
-        ActivePanel::Terminal => "Terminal",
-        ActivePanel::Sidebar => "Sidebar",
+    let panel_label = match dashboard.focus_panel {
+        FocusPanel::Sidebar => "Sidebar",
+        FocusPanel::Disk => "Disk",
+        FocusPanel::SysInfo => "SysInfo",
+        FocusPanel::Main => "Main",
+        FocusPanel::Terminal => "Terminal",
     };
-    let status = Line::from(vec![
-        Span::styled(" Tab ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::styled("Panels  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Esc ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::styled("Back  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("↑↓ ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::styled("Navigate  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            format!("[{panel_label}]"),
-            Style::default().fg(Color::Yellow),
-        ),
-    ]);
+    let status = match dashboard.focus_state {
+        FocusState::PanelSelect => Line::from(vec![
+            Span::styled(" ↑↓←→ ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled("Select Panel  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Enter ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled("Focus In  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Esc ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled("Back to Grid  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("[{panel_label}]"),
+                Style::default().fg(Color::Yellow),
+            ),
+        ]),
+        FocusState::PanelFocused => {
+            let extra_hint = match dashboard.focus_panel {
+                FocusPanel::Sidebar => "  ↑↓ Navigate  Enter Open  ←/⌫ Go Up",
+                FocusPanel::Terminal => "  (Input forwarded to SSH)",
+                _ => "  (View only)",
+            };
+            Line::from(vec![
+                Span::styled(" Esc ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                Span::styled("Back to Panel Select  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("[{panel_label}]"),
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::styled(extra_hint, Style::default().fg(Color::DarkGray)),
+            ])
+        }
+    };
     frame.render_widget(Paragraph::new(status), status_area);
 }
 
@@ -437,9 +471,10 @@ fn draw_sidebar(
     frame: &mut Frame,
     fb: &crate::file_browser::FileBrowserState,
     area: Rect,
+    border_color: Color,
     is_active: bool,
 ) {
-    let border_color = if is_active { Color::Cyan } else { Color::DarkGray };
+    // border_color is now passed in from the caller
 
     // Shorten path for title
     let path_display = if fb.current_path.len() > (area.width as usize).saturating_sub(4) {
@@ -453,12 +488,17 @@ fn draw_sidebar(
         fb.current_path.clone()
     };
 
+    let sidebar_title_style = if is_active {
+        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
             format!(" {path_display} "),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            sidebar_title_style,
         ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -541,14 +581,18 @@ fn draw_disk_panel(
     disks: &Option<Vec<crate::disk_info::DiskEntry>>,
     disk_loading: bool,
     area: Rect,
+    border_color: Color,
+    title_bold: bool,
 ) {
+    let title_style = if title_bold {
+        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray))
-        .title(Span::styled(
-            " Disk ",
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-        ));
+        .border_style(Style::default().fg(border_color))
+        .title(Span::styled(" Disk ", title_style));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -615,14 +659,18 @@ fn draw_sysinfo_panel(
     sys_info: &Option<crate::system_info::SystemInfo>,
     host_name: &str,
     area: Rect,
+    border_color: Color,
+    title_bold: bool,
 ) {
+    let title_style = if title_bold {
+        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray))
-        .title(Span::styled(
-            format!(" {host_name} "),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-        ));
+        .border_style(Style::default().fg(border_color))
+        .title(Span::styled(format!(" {host_name} "), title_style));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -672,15 +720,27 @@ fn draw_main_panel(
     frame: &mut Frame,
     data: &crate::session::SessionData,
     area: Rect,
+    border_color: Color,
+    title_bold: bool,
 ) {
+    let title_style = if title_bold {
+        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
     // If viewing a file, show file content
     if let Some(filename) = &data.file_browser.viewing_file {
+        let file_title_style = if title_bold {
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray))
+            .border_style(Style::default().fg(border_color))
             .title(Span::styled(
                 format!(" 📄 {filename} "),
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                file_title_style,
             ));
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -708,11 +768,8 @@ fn draw_main_panel(
     // Default: process viewer with metrics bars
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray))
-        .title(Span::styled(
-            " Main ",
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-        ));
+        .border_style(Style::default().fg(border_color))
+        .title(Span::styled(" Main ", title_style));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 

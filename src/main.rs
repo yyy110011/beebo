@@ -91,10 +91,6 @@ fn handle_input(
 ) -> bool {
     if let Some(idx) = dashboard.focused {
         // === Focused mode ===
-        if code == KeyCode::Esc {
-            dashboard.unfocus();
-            return false;
-        }
 
         let state = rt.block_on(async {
             let data = dashboard.sessions[idx].lock().await;
@@ -107,6 +103,10 @@ fn handle_input(
                     dashboard.entering_password = true;
                 }
                 match code {
+                    KeyCode::Esc => {
+                        dashboard.unfocus();
+                        return false;
+                    }
                     KeyCode::Enter => {
                         rt.block_on(dashboard.submit_password());
                     }
@@ -120,92 +120,124 @@ fn handle_input(
                 }
             }
             SessionState::Connected => {
-                use crate::dashboard::ActivePanel;
+                use crate::dashboard::{FocusPanel, FocusState, NavDirection};
 
-                if code == KeyCode::Tab {
-                    dashboard.toggle_panel();
-                    return false;
-                }
-
-                match dashboard.active_panel {
-                    ActivePanel::Terminal => {
-                        // All keys go to SSH (current behavior)
-                        let bytes = key_to_bytes(code, modifiers);
-                        if !bytes.is_empty() {
-                            rt.block_on(dashboard.send_input(bytes));
-                        }
-                    }
-                    ActivePanel::Sidebar => {
-                        // File browser navigation
-                        let session = dashboard.sessions[idx].clone();
+                match dashboard.focus_state {
+                    FocusState::PanelSelect => {
+                        // Arrow keys / hjkl move between panels
                         match code {
-                            KeyCode::Up | KeyCode::Char('k') => {
-                                rt.block_on(async {
-                                    let mut data = session.lock().await;
-                                    if data.file_browser.selected > 0 {
-                                        data.file_browser.selected -= 1;
-                                    }
-                                });
-                            }
-                            KeyCode::Down | KeyCode::Char('j') => {
-                                rt.block_on(async {
-                                    let mut data = session.lock().await;
-                                    let len = data.file_browser.entries.len();
-                                    if data.file_browser.selected + 1 < len {
-                                        data.file_browser.selected += 1;
-                                    }
-                                });
-                            }
+                            KeyCode::Up | KeyCode::Char('k') => dashboard.move_focus(NavDirection::Up),
+                            KeyCode::Down | KeyCode::Char('j') => dashboard.move_focus(NavDirection::Down),
+                            KeyCode::Left | KeyCode::Char('h') => dashboard.move_focus(NavDirection::Left),
+                            KeyCode::Right | KeyCode::Char('l') => dashboard.move_focus(NavDirection::Right),
                             KeyCode::Enter => {
-                                // Enter directory or view file
-                                rt.block_on(async {
-                                    let (sftp_arc, selected, is_dir) = {
-                                        let data = session.lock().await;
-                                        let sftp = data.sftp.clone();
-                                        let sel = data.file_browser.selected;
-                                        let dir = data.file_browser.entries.get(sel).map(|e| e.is_dir).unwrap_or(false);
-                                        (sftp, sel, dir)
-                                    };
-                                    if let Some(sftp) = sftp_arc {
-                                        let sftp_guard = sftp.lock().await;
-                                        let mut data = session.lock().await;
-                                        if is_dir {
-                                            crate::file_browser::enter_directory(&sftp_guard, &mut data.file_browser, selected).await;
-                                        } else {
-                                            crate::file_browser::read_file(&sftp_guard, &mut data.file_browser, selected).await;
-                                        }
-                                    }
-                                });
+                                dashboard.focus_state = FocusState::PanelFocused;
                             }
-                            KeyCode::Backspace => {
-                                // Go up one directory / close file view
-                                rt.block_on(async {
-                                    let is_viewing_file = {
-                                        let data = session.lock().await;
-                                        data.file_browser.viewing_file.is_some()
-                                    };
-                                    if is_viewing_file {
-                                        let mut data = session.lock().await;
-                                        data.file_browser.close_file();
-                                    } else {
-                                        let sftp_arc = {
-                                            let data = session.lock().await;
-                                            data.sftp.clone()
-                                        };
-                                        if let Some(sftp) = sftp_arc {
-                                            let sftp_guard = sftp.lock().await;
-                                            let mut data = session.lock().await;
-                                            crate::file_browser::go_up(&sftp_guard, &mut data.file_browser).await;
-                                        }
-                                    }
-                                });
+                            KeyCode::Esc => {
+                                dashboard.unfocus();
                             }
                             _ => {}
                         }
                     }
+                    FocusState::PanelFocused => {
+                        match dashboard.focus_panel {
+                            FocusPanel::Terminal => {
+                                if code == KeyCode::Esc {
+                                    dashboard.focus_state = FocusState::PanelSelect;
+                                    return false;
+                                }
+                                // All keys go to SSH
+                                let bytes = key_to_bytes(code, modifiers);
+                                if !bytes.is_empty() {
+                                    rt.block_on(dashboard.send_input(bytes));
+                                }
+                            }
+                            FocusPanel::Sidebar => {
+                                let session = dashboard.sessions[idx].clone();
+                                match code {
+                                    KeyCode::Esc => {
+                                        dashboard.focus_state = FocusState::PanelSelect;
+                                    }
+                                    KeyCode::Up | KeyCode::Char('k') => {
+                                        rt.block_on(async {
+                                            let mut data = session.lock().await;
+                                            if data.file_browser.selected > 0 {
+                                                data.file_browser.selected -= 1;
+                                            }
+                                        });
+                                    }
+                                    KeyCode::Down | KeyCode::Char('j') => {
+                                        rt.block_on(async {
+                                            let mut data = session.lock().await;
+                                            let len = data.file_browser.entries.len();
+                                            if data.file_browser.selected + 1 < len {
+                                                data.file_browser.selected += 1;
+                                            }
+                                        });
+                                    }
+                                    KeyCode::Enter | KeyCode::Right => {
+                                        // Enter directory or view file
+                                        rt.block_on(async {
+                                            let (sftp_arc, selected, is_dir) = {
+                                                let data = session.lock().await;
+                                                let sftp = data.sftp.clone();
+                                                let sel = data.file_browser.selected;
+                                                let dir = data.file_browser.entries.get(sel).map(|e| e.is_dir).unwrap_or(false);
+                                                (sftp, sel, dir)
+                                            };
+                                            if let Some(sftp) = sftp_arc {
+                                                let sftp_guard = sftp.lock().await;
+                                                let mut data = session.lock().await;
+                                                if is_dir {
+                                                    crate::file_browser::enter_directory(&sftp_guard, &mut data.file_browser, selected).await;
+                                                } else {
+                                                    crate::file_browser::read_file(&sftp_guard, &mut data.file_browser, selected).await;
+                                                }
+                                            }
+                                        });
+                                    }
+                                    KeyCode::Left | KeyCode::Backspace => {
+                                        // Go up one directory / close file view
+                                        rt.block_on(async {
+                                            let is_viewing_file = {
+                                                let data = session.lock().await;
+                                                data.file_browser.viewing_file.is_some()
+                                            };
+                                            if is_viewing_file {
+                                                let mut data = session.lock().await;
+                                                data.file_browser.close_file();
+                                            } else {
+                                                let sftp_arc = {
+                                                    let data = session.lock().await;
+                                                    data.sftp.clone()
+                                                };
+                                                if let Some(sftp) = sftp_arc {
+                                                    let sftp_guard = sftp.lock().await;
+                                                    let mut data = session.lock().await;
+                                                    crate::file_browser::go_up(&sftp_guard, &mut data.file_browser).await;
+                                                }
+                                            }
+                                        });
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            // View-only panels: only Esc returns to PanelSelect
+                            FocusPanel::Disk | FocusPanel::SysInfo | FocusPanel::Main => {
+                                if code == KeyCode::Esc {
+                                    dashboard.focus_state = FocusState::PanelSelect;
+                                }
+                            }
+                        }
+                    }
                 }
             }
-            _ => {}
+            _ => {
+                if code == KeyCode::Esc {
+                    dashboard.unfocus();
+                    return false;
+                }
+            }
         }
     } else {
         // === Grid mode ===
