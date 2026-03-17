@@ -415,7 +415,7 @@ fn handle_input(
                 KeyCode::Down | KeyCode::Char('j') => { dashboard.move_host(NavDirection::Down); }
                 KeyCode::Left | KeyCode::Char('h') => { dashboard.move_host(NavDirection::Left); }
                 KeyCode::Right | KeyCode::Char('l') => { dashboard.move_host(NavDirection::Right); }
-                KeyCode::Enter => dashboard.confirm_move(),
+                KeyCode::Enter | KeyCode::Char(' ') => dashboard.confirm_move(),
                 KeyCode::Esc => dashboard.cancel_move(rt.handle()),
                 _ => {}
             }

@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::dashboard::{Dashboard, FocusPanel, FocusState};
+use crate::grid_layout::MAX_HOSTS_PER_ROW;
 use crate::metrics::MetricType;
 use crate::session::SessionState;
 
@@ -96,14 +97,17 @@ fn draw_grid(frame: &mut Frame, dashboard: &Dashboard, rt: &tokio::runtime::Hand
         }
 
         let cols = dash_row.hosts.len();
+        let tile_width = tiles_area.width / MAX_HOSTS_PER_ROW as u16;
+        let row_width = tile_width * cols as u16;
         let col_constraints: Vec<Constraint> = (0..cols)
-            .map(|_| Constraint::Ratio(1, cols as u32))
+            .map(|_| Constraint::Length(tile_width))
             .collect();
 
+        let row_area = Rect::new(tiles_area.x, tiles_area.y, row_width, tiles_area.height);
         let col_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints(col_constraints)
-            .split(tiles_area);
+            .split(row_area);
 
         for (col_idx, session) in dash_row.hosts.iter().enumerate() {
             let is_selected = !dashboard.in_hidden_section
@@ -156,14 +160,17 @@ fn draw_grid(frame: &mut Frame, dashboard: &Dashboard, rt: &tokio::runtime::Hand
         // Render hidden host tiles
         let cols = dashboard.hidden_hosts.len();
         if cols > 0 {
+            let tile_width = hidden_tiles_area.width / MAX_HOSTS_PER_ROW as u16;
+            let row_width = tile_width * cols as u16;
             let col_constraints: Vec<Constraint> = (0..cols)
-                .map(|_| Constraint::Ratio(1, cols as u32))
+                .map(|_| Constraint::Length(tile_width))
                 .collect();
 
+            let hidden_row_area = Rect::new(hidden_tiles_area.x, hidden_tiles_area.y, row_width, hidden_tiles_area.height);
             let col_chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints(col_constraints)
-                .split(hidden_tiles_area);
+                .split(hidden_row_area);
 
             for (i, session) in dashboard.hidden_hosts.iter().enumerate() {
                 let is_selected = dashboard.in_hidden_section && dashboard.hidden_selected == i;
@@ -194,7 +201,7 @@ fn draw_grid(frame: &mut Frame, dashboard: &Dashboard, rt: &tokio::runtime::Hand
         Line::from(vec![
             Span::styled(" ↑↓←→ ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
             Span::styled("Move  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Enter ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled("Space ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
             Span::styled("Place  ", Style::default().fg(Color::DarkGray)),
             Span::styled("Esc ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
             Span::styled("Cancel", Style::default().fg(Color::DarkGray)),
