@@ -35,9 +35,7 @@ fn draw_grid(frame: &mut Frame, dashboard: &mut Dashboard, rt: &tokio::runtime::
     let num_rows = dashboard.rows.len();
     let has_hidden = dashboard.show_hidden && !dashboard.hidden_hosts.is_empty();
 
-    // Each row gets: 1 line for header + equal share of remaining height for tiles
-    let total_sections = num_rows + if has_hidden { 1 } else { 0 };
-    if total_sections == 0 {
+    if num_rows == 0 && !has_hidden {
         // Nothing to render
         let status = Line::from(Span::styled(
             " No hosts configured. q Quit",
@@ -47,28 +45,40 @@ fn draw_grid(frame: &mut Frame, dashboard: &mut Dashboard, rt: &tokio::runtime::
         return;
     }
 
-    // Calculate approximate row height for scroll calculations
-    // Each row takes: 1 (header) + tile_height
-    // tile_height ≈ grid_area.height / total_sections (from Ratio constraint)
+    // Calculate how many rows can be visible based on the RENDERED row count.
+    // Each rendered row uses: 1 line (header) + tile_height.
+    // tile_height comes from Ratio(1, rendered_sections) applied to the
+    // remaining height after subtracting headers.  We solve for visible_rows
+    // self-consistently: visible_rows rows each need 1 header line, plus
+    // tiles that share the leftover space equally.
     let grid_height = grid_area.height as usize;
-    let approx_tile_height = if total_sections > 0 {
-        (grid_height / total_sections).max(1)
-    } else {
-        1
-    };
-    let approx_row_height = 1 + approx_tile_height; // header + tiles
+    let hidden_extra = if has_hidden { 1usize } else { 0 };
 
-    // Calculate how many rows can be visible
-    let visible_rows = if approx_row_height > 0 {
-        (grid_height / approx_row_height).max(1)
+    let visible_rows = if num_rows == 0 {
+        0
     } else {
-        num_rows
+        // Each rendered section (visible_rows + hidden_extra) gets an equal
+        // share of the space left after all headers are subtracted.
+        // row_height(n) = 1 + (grid_height - (n + hidden_extra)) / (n + hidden_extra)
+        //               = grid_height / (n + hidden_extra)   (integer division)
+        // We want the largest n such that n * row_height(n) <= grid_height.
+        let mut n = num_rows; // start optimistic
+        loop {
+            let sections = n + hidden_extra;
+            let row_h = (grid_height / sections).max(1); // total per row (header+tiles)
+            let fits = grid_height / row_h;
+            let capped = fits.min(num_rows);
+            if capped >= n || n <= 1 {
+                break capped.max(1);
+            }
+            n = capped;
+        }
     };
 
     // Adjust scroll_offset to keep selected_row visible
     if dashboard.selected_row < dashboard.scroll_offset {
         dashboard.scroll_offset = dashboard.selected_row;
-    } else if dashboard.selected_row >= dashboard.scroll_offset + visible_rows {
+    } else if visible_rows > 0 && dashboard.selected_row >= dashboard.scroll_offset + visible_rows {
         dashboard.scroll_offset = dashboard.selected_row.saturating_sub(visible_rows - 1);
     }
     // Clamp scroll_offset
