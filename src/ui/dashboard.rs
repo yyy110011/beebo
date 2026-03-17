@@ -19,6 +19,10 @@ pub fn draw(frame: &mut Frame, dashboard: &mut Dashboard, rt: &tokio::runtime::H
     }
 }
 
+const ROW_HEADER_HEIGHT: u16 = 1;
+const ROW_TILE_HEIGHT: u16 = 8;
+const ROW_TOTAL_HEIGHT: u16 = ROW_HEADER_HEIGHT + ROW_TILE_HEIGHT;
+
 fn draw_grid(frame: &mut Frame, dashboard: &mut Dashboard, rt: &tokio::runtime::Handle) {
     let area = frame.area();
 
@@ -45,34 +49,14 @@ fn draw_grid(frame: &mut Frame, dashboard: &mut Dashboard, rt: &tokio::runtime::
         return;
     }
 
-    // Calculate how many rows can be visible based on the RENDERED row count.
-    // Each rendered row uses: 1 line (header) + tile_height.
-    // tile_height comes from Ratio(1, rendered_sections) applied to the
-    // remaining height after subtracting headers.  We solve for visible_rows
-    // self-consistently: visible_rows rows each need 1 header line, plus
-    // tiles that share the leftover space equally.
+    // Fixed row height: every row is exactly ROW_TOTAL_HEIGHT lines.
     let grid_height = grid_area.height as usize;
-    let hidden_extra = if has_hidden { 1usize } else { 0 };
 
     let visible_rows = if num_rows == 0 {
         0
     } else {
-        // Each rendered section (visible_rows + hidden_extra) gets an equal
-        // share of the space left after all headers are subtracted.
-        // row_height(n) = 1 + (grid_height - (n + hidden_extra)) / (n + hidden_extra)
-        //               = grid_height / (n + hidden_extra)   (integer division)
-        // We want the largest n such that n * row_height(n) <= grid_height.
-        let mut n = num_rows; // start optimistic
-        loop {
-            let sections = n + hidden_extra;
-            let row_h = (grid_height / sections).max(1); // total per row (header+tiles)
-            let fits = grid_height / row_h;
-            let capped = fits.min(num_rows);
-            if capped >= n || n <= 1 {
-                break capped.max(1);
-            }
-            n = capped;
-        }
+        let available = grid_height.saturating_sub(if has_hidden { ROW_TOTAL_HEIGHT as usize } else { 0 });
+        (available / ROW_TOTAL_HEIGHT as usize).max(1).min(num_rows)
     };
 
     // Adjust scroll_offset to keep selected_row visible
@@ -93,16 +77,15 @@ fn draw_grid(frame: &mut Frame, dashboard: &mut Dashboard, rt: &tokio::runtime::
     let end_row = (scroll_offset + visible_rows).min(num_rows);
     let visible_row_count = end_row - scroll_offset;
 
-    // Build constraints only for visible rows
-    let rendered_sections = visible_row_count + if has_hidden { 1 } else { 0 };
+    // Build constraints only for visible rows — all tiles use FIXED height
     let mut constraints: Vec<Constraint> = Vec::new();
     for _ in 0..visible_row_count {
-        constraints.push(Constraint::Length(1)); // row header
-        constraints.push(Constraint::Ratio(1, rendered_sections as u32)); // tiles
+        constraints.push(Constraint::Length(ROW_HEADER_HEIGHT)); // header
+        constraints.push(Constraint::Length(ROW_TILE_HEIGHT));    // tiles — FIXED, never changes
     }
     if has_hidden {
-        constraints.push(Constraint::Length(1)); // hidden header
-        constraints.push(Constraint::Ratio(1, rendered_sections as u32)); // hidden tiles
+        constraints.push(Constraint::Length(ROW_HEADER_HEIGHT)); // hidden header
+        constraints.push(Constraint::Length(ROW_TILE_HEIGHT));    // hidden tiles — same fixed height
     }
 
     let chunks = Layout::default()
