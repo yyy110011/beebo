@@ -411,11 +411,24 @@ fn draw_focused(
         frame.render_widget(term_block, terminal_area);
 
         let screen = data.screen.screen();
-        let rows = term_inner.height as usize;
+        let pane_rows = term_inner.height as usize;
         let total_rows = screen.size().0 as usize;
-        let start = if total_rows > rows { total_rows - rows } else { 0 };
 
-        let lines: Vec<Line> = (start..total_rows)
+        // Find last row with actual content (prompt is at top, not bottom)
+        let mut last_content_row = 0;
+        for r in (0..total_rows).rev() {
+            let r16 = r as u16;
+            let content = screen.contents_between(r16, 0, r16 + 1, 0);
+            if !content.trim().is_empty() {
+                last_content_row = r;
+                break;
+            }
+        }
+
+        let end = (last_content_row + 1).min(total_rows);
+        let start = if end > pane_rows { end - pane_rows } else { 0 };
+
+        let lines: Vec<Line> = (start..end)
             .map(|r| {
                 let r16 = r as u16;
                 let content = screen.contents_between(r16, 0, r16 + 1, 0);
@@ -448,7 +461,7 @@ fn draw_focused(
         ]),
         FocusState::PanelFocused => {
             let extra_hint = match dashboard.focus_panel {
-                FocusPanel::Sidebar => "  ↑↓ Navigate  Enter Open  ←/⌫ Go Up",
+                FocusPanel::Sidebar => "  ↑↓ Navigate  Enter Open  ←/⌫ Up  /Search  gGoto",
                 FocusPanel::Terminal => "  (Input forwarded to SSH)",
                 _ => "  (View only)",
             };
@@ -474,8 +487,6 @@ fn draw_sidebar(
     border_color: Color,
     is_active: bool,
 ) {
-    // border_color is now passed in from the caller
-
     // Shorten path for title
     let path_display = if fb.current_path.len() > (area.width as usize).saturating_sub(4) {
         let parts: Vec<&str> = fb.current_path.rsplitn(2, '/').collect();
@@ -521,7 +532,39 @@ fn draw_sidebar(
         return;
     }
 
-    if fb.entries.is_empty() {
+    // --- Determine how many rows go to the footer (search/goto input + suggestions) ---
+    let footer_lines: usize = if fb.goto_mode {
+        // 1 for the input line + up to N suggestion rows
+        1 + fb.goto_suggestions.len().min(6)
+    } else if fb.search_mode {
+        1 // search input line
+    } else {
+        0
+    };
+
+    let entries_height = (inner.height as usize).saturating_sub(footer_lines);
+
+    // --- Build filtered entry list ---
+    let search_lower = if fb.search_mode && !fb.search_query.is_empty() {
+        Some(fb.search_query.to_lowercase())
+    } else {
+        None
+    };
+
+    let filtered_entries: Vec<(usize, &crate::file_browser::FileEntry)> = fb
+        .entries
+        .iter()
+        .enumerate()
+        .filter(|(_i, entry)| {
+            if let Some(q) = &search_lower {
+                entry.name.to_lowercase().contains(q)
+            } else {
+                true
+            }
+        })
+        .collect();
+
+    if filtered_entries.is_empty() && !fb.search_mode && !fb.goto_mode {
         let lines = vec![Line::from(Span::styled(
             "(empty)",
             Style::default().fg(Color::DarkGray),
@@ -531,35 +574,32 @@ fn draw_sidebar(
     }
 
     // Compute visible window around selected item
-    let visible_height = inner.height as usize;
-    let total = fb.entries.len();
+    let total = filtered_entries.len();
     let selected = fb.selected;
 
-    let scroll_offset = if total <= visible_height {
+    let scroll_offset = if total <= entries_height {
         0
-    } else if selected < visible_height / 2 {
+    } else if selected < entries_height / 2 {
         0
-    } else if selected + visible_height / 2 >= total {
-        total.saturating_sub(visible_height)
+    } else if selected + entries_height / 2 >= total {
+        total.saturating_sub(entries_height)
     } else {
-        selected.saturating_sub(visible_height / 2)
+        selected.saturating_sub(entries_height / 2)
     };
 
-    let lines: Vec<Line> = fb
-        .entries
+    let mut entry_lines: Vec<Line> = filtered_entries
         .iter()
-        .enumerate()
         .skip(scroll_offset)
-        .take(visible_height)
+        .take(entries_height)
         .map(|(i, entry)| {
             let icon = if entry.is_dir { "📁 " } else { "📄 " };
             let name = &entry.name;
-            let style = if i == selected && is_active {
+            let style = if *i == selected && is_active {
                 Style::default()
                     .fg(Color::Black)
                     .bg(Color::Cyan)
                     .add_modifier(Modifier::BOLD)
-            } else if i == selected {
+            } else if *i == selected {
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD)
@@ -572,7 +612,38 @@ fn draw_sidebar(
         })
         .collect();
 
-    frame.render_widget(Paragraph::new(lines), inner);
+    // --- Footer: search input, goto input + suggestions ---
+    if fb.search_mode {
+        entry_lines.push(Line::from(Span::styled(
+            format!("🔍 {}_", fb.search_query),
+            Style::default().fg(Color::Yellow),
+        )));
+    } else if fb.goto_mode {
+        entry_lines.push(Line::from(Span::styled(
+            format!("📂 {}_", fb.goto_path),
+            Style::default().fg(Color::Yellow),
+        )));
+        // Suggestion dropdown
+        for (si, suggestion) in fb.goto_suggestions.iter().take(6).enumerate() {
+            let suffix = if suggestion.is_dir { "/" } else { "" };
+            let style = if si == fb.goto_selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else if suggestion.is_dir {
+                Style::default().fg(Color::Blue)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            entry_lines.push(Line::from(Span::styled(
+                format!("  {}{}", suggestion.name, suffix),
+                style,
+            )));
+        }
+    }
+
+    frame.render_widget(Paragraph::new(entry_lines), inner);
 }
 
 // ─── Helper: Disk Info Panel ───

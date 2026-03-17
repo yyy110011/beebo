@@ -8,6 +8,9 @@ const MAX_FILE_SIZE: u64 = 100 * 1024;
 /// Timeout for directory listing operations.
 const DIR_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Timeout for goto-mode suggestion fetches.
+const GOTO_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// Timeout for file read operations.
 const FILE_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -22,6 +25,16 @@ pub struct FileBrowserState {
     pub file_content: Option<String>,
     /// Name of the file currently being viewed.
     pub viewing_file: Option<String>,
+
+    // ── Search mode (`/`) ──
+    pub search_query: String,
+    pub search_mode: bool,
+
+    // ── Goto mode (`g`) ──
+    pub goto_path: String,
+    pub goto_mode: bool,
+    pub goto_suggestions: Vec<FileEntry>,
+    pub goto_selected: usize,
 }
 
 /// A single entry in a directory listing.
@@ -44,6 +57,12 @@ impl FileBrowserState {
             error: None,
             file_content: None,
             viewing_file: None,
+            search_query: String::new(),
+            search_mode: false,
+            goto_path: String::new(),
+            goto_mode: false,
+            goto_suggestions: Vec::new(),
+            goto_selected: 0,
         }
     }
 
@@ -51,6 +70,53 @@ impl FileBrowserState {
     pub fn close_file(&mut self) {
         self.file_content = None;
         self.viewing_file = None;
+    }
+
+    /// Enter search mode.
+    pub fn enter_search(&mut self) {
+        self.search_mode = true;
+        self.search_query.clear();
+    }
+
+    /// Exit search mode.
+    pub fn exit_search(&mut self) {
+        self.search_mode = false;
+        self.search_query.clear();
+    }
+
+    /// Enter goto mode.
+    pub fn enter_goto(&mut self) {
+        self.goto_mode = true;
+        self.goto_path.clear();
+        self.goto_suggestions.clear();
+        self.goto_selected = 0;
+    }
+
+    /// Exit goto mode.
+    pub fn exit_goto(&mut self) {
+        self.goto_mode = false;
+        self.goto_path.clear();
+        self.goto_suggestions.clear();
+        self.goto_selected = 0;
+    }
+
+    /// Autocomplete the currently selected goto suggestion.
+    pub fn autocomplete_selected(&mut self) {
+        if let Some(entry) = self.goto_suggestions.get(self.goto_selected) {
+            // Split path into dir part; replace the partial prefix with the full name
+            let (dir, _prefix) = split_goto_input(&self.goto_path, &self.current_path);
+            let mut completed = if dir.ends_with('/') {
+                format!("{}{}", dir, entry.name)
+            } else {
+                format!("{}/{}", dir, entry.name)
+            };
+            if entry.is_dir {
+                completed.push('/');
+            }
+            self.goto_path = completed;
+            self.goto_suggestions.clear();
+            self.goto_selected = 0;
+        }
     }
 }
 
@@ -173,6 +239,84 @@ pub async fn read_file(sftp: &SftpSession, state: &mut FileBrowserState, index: 
 }
 
 // ---------------------------------------------------------------------------
+// Goto-mode suggestions
+// ---------------------------------------------------------------------------
+
+/// Split a goto input into (directory_to_list, name_prefix).
+///
+/// - `/var/lo`  → (`/var/`, `lo`)
+/// - `/etc/`    → (`/etc/`, ``)
+/// - `lo`       → (`<current_path>`, `lo`)
+pub fn split_goto_input<'a>(input: &'a str, current_path: &'a str) -> (String, String) {
+    if input.is_empty() {
+        return (current_path.to_string(), String::new());
+    }
+    if input.contains('/') {
+        if let Some(pos) = input.rfind('/') {
+            let dir = if pos == 0 { "/".to_string() } else { input[..pos].to_string() };
+            let prefix = input[pos + 1..].to_string();
+            (dir, prefix)
+        } else {
+            (current_path.to_string(), input.to_string())
+        }
+    } else {
+        (current_path.to_string(), input.to_string())
+    }
+}
+
+/// Fetch goto suggestions from SFTP based on the current goto input.
+pub async fn fetch_goto_suggestions(
+    sftp: &SftpSession,
+    state: &mut FileBrowserState,
+) {
+    let (dir, prefix) = split_goto_input(&state.goto_path, &state.current_path);
+
+    match tokio::time::timeout(GOTO_TIMEOUT, sftp.read_dir(&dir)).await {
+        Ok(Ok(entries)) => {
+            let prefix_lower = prefix.to_lowercase();
+            let mut suggestions: Vec<FileEntry> = entries
+                .into_iter()
+                .filter(|e| {
+                    let name = e.file_name();
+                    name != "." && name != ".."
+                })
+                .filter(|e| {
+                    prefix_lower.is_empty() || e.file_name().to_lowercase().starts_with(&prefix_lower)
+                })
+                .map(|e| {
+                    let meta = e.metadata();
+                    let ft = e.file_type();
+                    FileEntry {
+                        name: e.file_name(),
+                        is_dir: ft.is_dir(),
+                        size: meta.size.unwrap_or(0),
+                        permissions: permissions_string(meta.permissions.unwrap_or(0)),
+                    }
+                })
+                .collect();
+
+            suggestions.sort_by(|a, b| {
+                b.is_dir
+                    .cmp(&a.is_dir)
+                    .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            });
+
+            state.goto_suggestions = suggestions;
+            state.goto_selected = 0;
+        }
+        Ok(Err(_)) => {
+            state.goto_suggestions.clear();
+            state.goto_selected = 0;
+        }
+        Err(_) => {
+            // Timeout — clear suggestions silently
+            state.goto_suggestions.clear();
+            state.goto_selected = 0;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -232,6 +376,12 @@ mod tests {
         assert!(state.error.is_none());
         assert!(state.file_content.is_none());
         assert!(state.viewing_file.is_none());
+        assert!(!state.search_mode);
+        assert!(state.search_query.is_empty());
+        assert!(!state.goto_mode);
+        assert!(state.goto_path.is_empty());
+        assert!(state.goto_suggestions.is_empty());
+        assert_eq!(state.goto_selected, 0);
     }
 
     #[test]
@@ -242,6 +392,64 @@ mod tests {
         state.close_file();
         assert!(state.file_content.is_none());
         assert!(state.viewing_file.is_none());
+    }
+
+    #[test]
+    fn test_split_goto_input_absolute() {
+        let (dir, prefix) = split_goto_input("/var/lo", "/home/user");
+        assert_eq!(dir, "/var");
+        assert_eq!(prefix, "lo");
+    }
+
+    #[test]
+    fn test_split_goto_input_trailing_slash() {
+        let (dir, prefix) = split_goto_input("/etc/", "/home/user");
+        assert_eq!(dir, "/etc");
+        assert_eq!(prefix, "");
+    }
+
+    #[test]
+    fn test_split_goto_input_relative() {
+        let (dir, prefix) = split_goto_input("lo", "/home/user");
+        assert_eq!(dir, "/home/user");
+        assert_eq!(prefix, "lo");
+    }
+
+    #[test]
+    fn test_split_goto_input_root() {
+        let (dir, prefix) = split_goto_input("/", "/home/user");
+        assert_eq!(dir, "/");
+        assert_eq!(prefix, "");
+    }
+
+    #[test]
+    fn test_split_goto_input_empty() {
+        let (dir, prefix) = split_goto_input("", "/home/user");
+        assert_eq!(dir, "/home/user");
+        assert_eq!(prefix, "");
+    }
+
+    #[test]
+    fn test_enter_exit_search() {
+        let mut state = FileBrowserState::new("/home/user".to_string());
+        state.enter_search();
+        assert!(state.search_mode);
+        state.search_query = "test".to_string();
+        state.exit_search();
+        assert!(!state.search_mode);
+        assert!(state.search_query.is_empty());
+    }
+
+    #[test]
+    fn test_enter_exit_goto() {
+        let mut state = FileBrowserState::new("/home/user".to_string());
+        state.enter_goto();
+        assert!(state.goto_mode);
+        state.goto_path = "/var".to_string();
+        state.exit_goto();
+        assert!(!state.goto_mode);
+        assert!(state.goto_path.is_empty());
+        assert!(state.goto_suggestions.is_empty());
     }
 
     #[test]
