@@ -1,5 +1,6 @@
 mod dashboard;
 mod disk_info;
+mod file_browser;
 mod metrics;
 mod process_info;
 mod session;

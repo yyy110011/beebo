@@ -1,3 +1,4 @@
 {
-    "lumi-ops.rootAgentMode": true
+    "lumi-ops.rootAgentMode": true,
+    "lumi-ops.cloneAgentRules": true
 }

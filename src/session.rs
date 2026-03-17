@@ -4,8 +4,10 @@ use tokio::sync::Mutex;
 use russh::client;
 use russh::keys::key::PrivateKeyWithHashAlg;
 use russh::ChannelMsg;
+use russh_sftp::client::SftpSession;
 
 use crate::disk_info::{self, DiskEntry};
+use crate::file_browser::{self, FileBrowserState};
 use crate::metrics::{self, MetricsData};
 use crate::process_info::{self, ProcessEntry};
 use crate::ssh_config::SshHost;
@@ -56,6 +58,10 @@ pub struct SessionData {
     pub disk_loading: bool,
     /// Top processes by CPU (collected every 2s).
     pub processes: Option<Vec<ProcessEntry>>,
+    /// SFTP session handle for file browsing.
+    pub sftp: Option<Arc<Mutex<SftpSession>>>,
+    /// File browser state for this session.
+    pub file_browser: FileBrowserState,
 }
 
 impl SessionData {
@@ -70,6 +76,8 @@ impl SessionData {
             disks: None,
             disk_loading: false,
             processes: None,
+            sftp: None,
+            file_browser: FileBrowserState::new("/".to_string()),
         }
     }
 }
@@ -186,7 +194,44 @@ async fn run_session(session_data: SharedSession, rt: tokio::runtime::Handle) ->
     // Spawn host info collectors
     system_info::spawn_system_info_collector(shared_handle.clone(), session_data.clone(), rt.clone());
     disk_info::spawn_disk_collector(shared_handle.clone(), session_data.clone(), rt.clone());
-    process_info::spawn_process_collector(shared_handle, session_data.clone(), rt);
+    process_info::spawn_process_collector(shared_handle.clone(), session_data.clone(), rt);
+
+    // --- SFTP initialization ---
+    let home_dir = metrics::exec_remote_cmd(&shared_handle, "echo $HOME")
+        .await
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "/".to_string());
+
+    let sftp_result = async {
+        let h = shared_handle.lock().await;
+        let sftp_channel = h.channel_open_session().await?;
+        sftp_channel.request_subsystem(true, "sftp").await?;
+        Ok::<_, russh::Error>(sftp_channel)
+    }
+    .await;
+
+    if let Ok(sftp_channel) = sftp_result {
+        match SftpSession::new(sftp_channel.into_stream()).await {
+            Ok(sftp) => {
+                let sftp = Arc::new(Mutex::new(sftp));
+                let mut fb_state = FileBrowserState::new(home_dir);
+                {
+                    let sftp_guard = sftp.lock().await;
+                    file_browser::refresh_listing(&sftp_guard, &mut fb_state).await;
+                }
+                let mut data = session_data.lock().await;
+                data.sftp = Some(sftp);
+                data.file_browser = fb_state;
+            }
+            Err(e) => {
+                let mut data = session_data.lock().await;
+                data.file_browser.error = Some(format!("SFTP init failed: {e}"));
+            }
+        }
+    } else if let Err(e) = sftp_result {
+        let mut data = session_data.lock().await;
+        data.file_browser.error = Some(format!("SFTP channel failed: {e}"));
+    }
 
     // Set up input channel
     let (input_tx, mut input_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
